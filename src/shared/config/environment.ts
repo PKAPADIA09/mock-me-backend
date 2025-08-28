@@ -40,7 +40,8 @@ const getEnvironmentConfig = (): EnvironmentConfig => {
     PIPER_URL: process.env.PIPER_URL || 'http://localhost:59125',
     PIPER_MODE: (process.env.PIPER_MODE as 'server' | 'binary') || 'binary',
     PIPER_BINARY_PATH: process.env.PIPER_BINARY_PATH, // e.g., /usr/local/bin/piper or ./piper
-    PIPER_MODEL_PATH: process.env.PIPER_MODEL_PATH,   // e.g., /path/to/en_US-amy-medium.onnx
+    // Default to bundled Amy model so Piper works out-of-the-box in binary mode
+    PIPER_MODEL_PATH: process.env.PIPER_MODEL_PATH || './piper_models/en_US-amy-medium.onnx',
   };
 };
 
