@@ -11,9 +11,8 @@ import { InterviewNotFound, VoiceInterviewSessionNotFound } from "./voiceIntervi
 import { DeepgramTranscriptionResult, EndInterviewResponse, GetNextQuestionResponse, InterviewQuestionData, StartVoiceInterviewResponse, SubmitAnswerRequest, SubmitAnswerResponse, VoiceInterview, VoiceInterviewSession } from "./voiceInterview.types";
 import fs from 'fs';
 import path from 'path';
-import { env } from '../../shared/config/environment';
 import { spawn } from 'child_process';
-import { query } from '../../db/db.query';
+import { env } from '../../shared/config/environment';
 
 
 const activeSessions = new Map<string, VoiceInterviewSession>();
@@ -59,7 +58,7 @@ export const startVoiceInterview = async(
 
     const greetingMessage = `Hello ${userName}! Welcome to your interview. Im excited to get to know you better today. Lets begin with our questions.`;
 
-    const greetingAudio = await generateTtsAudio(greetingMessage);
+    const greetingAudio = await tryGenerateTtsAudio(greetingMessage);
 
     return success( {
             sessionId
@@ -80,7 +79,7 @@ export const getNextQuestion = async(
     }
 
     const currentQuestion = session.questions[session.currentQuestionIndex];
-    const questionAudio = await generateTtsAudio(currentQuestion.question);
+    const questionAudio = await tryGenerateTtsAudio(currentQuestion.question);
 
     return success( {
         questionId: currentQuestion.id,
@@ -168,7 +167,7 @@ export const endVoiceInterview = async (
     const userName = userResult.isError() ? "there" : userResult.value.firstName;
 
     const farewellMessage = `Thank you ${userName}! It was lovely speaking with you today. Your interview has been completed successfully. Best of luck!`;
-    const farewellAudio = await generateTtsAudio(farewellMessage);
+    const farewellAudio = await tryGenerateTtsAudio(farewellMessage);
 
     // Calculate duration
     const startTime = new Date(session.startedAt);
@@ -243,26 +242,35 @@ async function generateAudioWithPiper(text: string): Promise<string> {
     }
 
     if (env.PIPER_MODE === 'server') {
+        // Try Piper HTTP server; if connection fails, fall back to binary mode
         const piperUrl = env.PIPER_URL || 'http://localhost:59125';
-        // Try /speak first; if it fails, try /synthesize with a default voice
-        let response = await fetch(`${piperUrl}/speak`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text })
-        });
-        if (!response.ok) {
-            response = await fetch(`${piperUrl}/synthesize`, {
+        try {
+            // Try /speak first; if it fails, try /synthesize with a default voice
+            let response = await fetch(`${piperUrl}/speak`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text, voice: 'en_US-amy-medium' })
+                body: JSON.stringify({ text })
             });
+
+            if (!response.ok) {
+                response = await fetch(`${piperUrl}/synthesize`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text, voice: 'en_US-amy-medium' })
+                });
+            }
+
+            if (!response.ok) {
+                throw new Error(`Piper TTS failed: ${response.status} ${response.statusText}`);
+            }
+
+            const wavBuffer = await response.arrayBuffer();
+            fs.writeFileSync(filePath, Buffer.from(wavBuffer));
+            return `/uploads/audio/${fileName}`;
+        } catch (serverErr) {
+            console.warn('Piper server mode failed, falling back to binary:', serverErr);
+            // fall through to binary mode below
         }
-        if (!response.ok) {
-            throw new Error(`Piper TTS failed: ${response.statusText}`);
-        }
-        const wavBuffer = await response.arrayBuffer();
-        fs.writeFileSync(filePath, Buffer.from(wavBuffer));
-        return `/uploads/audio/${fileName}`;
     }
 
     // Binary mode: call local piper CLI
@@ -287,11 +295,17 @@ async function generateAudioWithPiper(text: string): Promise<string> {
 }
 
 async function generateTtsAudio(text: string): Promise<string> {
-    if (env.TTS_PROVIDER === 'elevenlabs') {
-        return generateAudioWithElevenLabs(text);
-    }
-    // default to piper
+    // Strictly use Piper TTS
     return generateAudioWithPiper(text);
+}
+
+async function tryGenerateTtsAudio(text: string): Promise<string> {
+    try {
+        return await generateTtsAudio(text);
+    } catch (err) {
+        console.warn('TTS generation failed, continuing without audio:', err);
+        return '';
+    }
 }
 
 export async function transcribeAudioWithDeepgram(
